@@ -1,6 +1,7 @@
 # idempotency-keys
 
 Date: 2026-11-01
+Updated: 2026-11-08 (timeout-based reclaim)
 
 ## What I tried
 When a request times out or the response gets lost, the client retries. The server can't tell it's a retry, so the same action runs twice. Example: one payment request sent twice creates two payment records.
@@ -18,6 +19,11 @@ docker run --name idem-pg \
   -p 5432:5432 \
   -v "$PWD/schema.sql:/docker-entrypoint-initdb.d/schema.sql" \
   -d postgres:18
+```
+
+If db container already exists:
+```bash
+docker start idem-pg
 ```
 
 Test unique constraint (run twice):
@@ -41,6 +47,21 @@ Retry (same key, later):
 curl -s -X POST localhost:3000/payments -H 'Idempotency-Key: k8'
 ```
 
+Crash + reclaim:
+```bash
+node server.js & S=$!; sleep 1
+curl -s -X POST localhost:3000/payments -H 'Idempotency-Key: k13' &
+sleep 1; kill -9 $S; echo "--- crashed"
+sleep 1
+node server.js & S=$!; sleep 1
+echo "--- Immediate retry:"; curl -s -X POST localhost:3000/payments -H 'Idempotency-Key: k13'; echo
+sleep 11
+echo "--- retry after 11s:"; curl -s -X POST localhost:3000/payments -H 'Idempotency-Key: k13'; echo
+echo "--- again"; curl -s -X POST localhost:3000/payments -H 'Idempotency-Key: k13'; echo
+kill $S
+```
+
+
 ## What happened
 Unique constraint:
 ```
@@ -62,10 +83,27 @@ Retry:
 ```
 Same paymentId as the race. The server returned the saved response, no new payment.
 
+Crash + reclaim:
+```
+--- crashed
+--- Immediate retry:
+{"error":"request in progress"}
+--- retry after 11s:
+{"paymentId":1794131524441,"amount":100}
+--- again
+{"amount":100,"paymentId":1794131524441}
+```
+
+Case when server stop while the request was processing: Server crash, key stuck in processing -> Immediate retry gave 409 -> retry after 11 secs reclaim and payment done
+
 
 ## Doubts
-- Two identical requests at the same time? → Insert the key first (claim). The DB lets only one insert win.
-- Hundreds or thousands of users? → Only the same (user_id, key) collide. Different users don't block each other.
-- Server crashes mid-request? → Key stays stuck in `processing`. (open)
+- Two identical requests at the same time? -> Insert the key first (claim). The DB lets only one insert win.
+- Hundreds or thousands of users? -> Only the same (user_id, key) collide. Different users don't block each other.
+- Server crashes mid-request? -> Key stays stuck in `processing`. -> locked_at + reclaim after 10s.
+- If payment takes more time than timeout (ex - 10 secs) then retry would reclaim and payment would be done twice (open) -> timeout only reduces risk. Real fix is to pass the same key to the payment provider, or heartbeat.
 
 Write-up:
+
+
+

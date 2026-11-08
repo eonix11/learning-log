@@ -2,7 +2,7 @@ const express = require('express');
 const { Pool } = require('pg');
 
 const pool = new Pool({
-    connectionString: "postgressql://postgres:dev@localhost:5432/idem_demo"
+    connectionString: "postgresql://postgres:dev@localhost:5432/idem_demo"
 });
 
 const app = express();
@@ -23,7 +23,24 @@ app.post("/payments", async (req, res) => {
         [user_id, key]
     )
 
-    if (claim.rowCount === 0) {
+    let owned = claim.rowCount === 1; //is this a fresh claim
+
+    if (!owned) { // record already in db, means not first request and not a fresh claim
+        //reclaim
+        const reclaim = await pool.query(
+            `update idempotency_keys
+             set locked_at = now()
+             where user_id = $1 and key = $2
+                and status = 'processing'
+                and locked_at < now() - interval '10 seconds'
+             returning id
+            `, [user_id, key]
+        )
+
+        owned = reclaim.rowCount === 1;//is this reclaim
+    }
+
+    if (!owned) {//neither fresh claim not reclaim
         const {rows} = await pool.query(
         `select status, response, code from idempotency_keys
          where user_id=$1 and key=$2
