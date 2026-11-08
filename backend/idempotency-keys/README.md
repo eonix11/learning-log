@@ -103,7 +103,7 @@ Case when server stop while the request was processing: Server crash, key stuck 
 - Server crashes mid-request? -> Key stays stuck in `processing`. -> locked_at + reclaim after 10s.
 - If payment takes more time than timeout (ex - 10 secs) then retry would reclaim and payment would be done twice (open) -> timeout only reduces risk. Real fix is to pass the same key to the payment provider, or heartbeat.
 
-Write-up:
+Write-up: https://eonix11.github.io/posts/idempotency-keys-retries-without-double-payments
 
 
 
